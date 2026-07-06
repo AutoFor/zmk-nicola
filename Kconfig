@@ -1,0 +1,3 @@
+config NICOLA
+    bool "Enable NICOLA (oyayubi shift) behavior"
+    default y

@@ -1,0 +1,12 @@
+/*
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+/ {
+    behaviors {
+        /omit-if-no-ref/ nc: nicola {
+            compatible = "zmk,behavior-nicola";
+            #binding-cells = <1>;
+        };
+    };
+};

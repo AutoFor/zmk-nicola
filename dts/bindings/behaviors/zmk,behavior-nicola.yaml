@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+description: NICOLA (oyayubi shift) behavior
+
+compatible: "zmk,behavior-nicola"
+
+include: one_param.yaml

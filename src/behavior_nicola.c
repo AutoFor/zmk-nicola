@@ -7,7 +7,7 @@
  *
  * 原典からの拡張:
  *  - 連続シフト: 親指キーの物理押下状態を別管理し、解決後も押下中はシフトを維持する
- *  - 親指キー単独タップ: 左=Space / 右=変換(INT4) を送出
+ *  - 親指キー単独タップ: そのキー自身を送出 (既定: 左=Space / 右=変換(INT4)、DTで変更可)
  *  - Ctrl/Alt/GUI 押下中は素のキーコードを送出（ショートカット素通し）
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -28,9 +28,10 @@
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
-/* 親指シフトキーとして扱うパラメータ */
-#define NC_LTHUMB SPACE /* 左親指: 単独タップで Space */
-#define NC_RTHUMB INT4  /* 右親指: 単独タップで 変換 */
+/* 親指シフトキー (DTの left-thumb / right-thumb で変更可)。
+ * 単独タップ時はそのキー自身を送出する (既定: 左=Space, 右=INT4(変換)) */
+static uint32_t nc_lthumb = SPACE;
+static uint32_t nc_rthumb = INT4;
 
 /* NICOLA 配列テーブル (JIS / IMEローマ字入力想定) — nicola.c の nmap を移植 */
 struct nc_map {
@@ -66,6 +67,8 @@ static const struct nc_map nmap[] = {
 /* ---- 設定 ---- */
 struct behavior_nicola_config {
     int32_t range_pct;
+    uint32_t lthumb;
+    uint32_t rthumb;
 };
 
 /* 同時打鍵と判定される時間範囲 (%, 1-100)。やまぶきRと同方式:
@@ -228,7 +231,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         return ZMK_BEHAVIOR_OPAQUE;
     }
 
-    if (key == NC_LTHUMB) {
+    if (key == nc_lthumb) {
         nc_l_held = true;
         nc_l_used = false;
         nc_keycount++;
@@ -239,7 +242,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         }
         return ZMK_BEHAVIOR_OPAQUE;
     }
-    if (key == NC_RTHUMB) {
+    if (key == nc_rthumb) {
         nc_r_held = true;
         nc_r_used = false;
         nc_keycount++;
@@ -297,7 +300,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         }
     }
 
-    if (key == NC_LTHUMB) {
+    if (key == nc_lthumb) {
         if (nc_judge == 1) {
             /* 文字キーより先に親指が離れた = 押下が完全に重なっている → 同時打鍵 */
             nc_type_with(ts, true, false);
@@ -308,14 +311,14 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         nc_l_held = false;
         nc_l_used = false;
         if (tap) {
-            nc_tap(SPACE, ts); /* 単独タップ = Space */
+            nc_tap(nc_lthumb, ts); /* 単独タップ = そのキー自身 (既定Space) */
         } else if (nc_chrcount > 0) {
             nc_type(ts);
         }
         nc_keycount = (nc_r_held ? 1 : 0) + nc_chrcount;
         return ZMK_BEHAVIOR_OPAQUE;
     }
-    if (key == NC_RTHUMB) {
+    if (key == nc_rthumb) {
         if (nc_judge == 2) {
             nc_type_with(ts, false, true);
             nc_r_used = true;
@@ -325,7 +328,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         nc_r_held = false;
         nc_r_used = false;
         if (tap) {
-            nc_tap(INT4, ts); /* 単独タップ = 変換 */
+            nc_tap(nc_rthumb, ts); /* 単独タップ = そのキー自身 (既定変換) */
         } else if (nc_chrcount > 0) {
             nc_type(ts);
         }
@@ -348,6 +351,8 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
 static int behavior_nicola_init(const struct device *dev) {
     const struct behavior_nicola_config *cfg = dev->config;
     nc_range_pct = CLAMP(cfg->range_pct, 1, 100);
+    nc_lthumb = cfg->lthumb;
+    nc_rthumb = cfg->rthumb;
     nc_reset();
     return 0;
 }
@@ -423,6 +428,8 @@ static const struct behavior_driver_api behavior_nicola_driver_api = {
 #define NC_INST(n)                                                                                 \
     static const struct behavior_nicola_config behavior_nicola_config_##n = {                      \
         .range_pct = DT_INST_PROP(n, range_pct),                                                   \
+        .lthumb = DT_INST_PROP_OR(n, left_thumb, SPACE),                                           \
+        .rthumb = DT_INST_PROP_OR(n, right_thumb, INT4),                                           \
     };                                                                                             \
     BEHAVIOR_DT_INST_DEFINE(n, behavior_nicola_init, NULL, NULL, &behavior_nicola_config_##n,      \
                             POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,                      \

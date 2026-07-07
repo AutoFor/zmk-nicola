@@ -15,6 +15,12 @@ properties:
       この時間を超えて親指キーが押された場合、保留中の文字キーは
       単独打鍵として確定される。判定・出力は親指キー押下の瞬間に行う。
       親指キー先行(連続シフト)には適用されない。
+  range-pct:
+    type: int
+    default: 65
+    description: |
+      【このブランチ(main)では未使用】range-pctブランチ(やまぶきR風%方式)用の設定。
+      同じキーマップを両ブランチで使えるように宣言だけしてある。
   left-thumb:
     type: int
     description: |

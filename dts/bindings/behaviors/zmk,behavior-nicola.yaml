@@ -15,6 +15,12 @@ properties:
       文字キーの押下時点を0、離す(または次のキーを押す)時点を100として、
       その前半◯%以内に親指キーが押されたら同時打鍵とみなす。
       親指キー先行(連続シフト)には適用されない。
+  timeout-ms:
+    type: int
+    default: 130
+    description: |
+      【このブランチ(range-pct)では未使用】mainブランチ(固定ms窓方式)用の設定。
+      同じキーマップを両ブランチで使えるように宣言だけしてある。
   left-thumb:
     type: int
     description: |

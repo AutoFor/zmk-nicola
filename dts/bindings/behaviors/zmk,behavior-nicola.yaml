@@ -26,6 +26,13 @@ properties:
     description: |
       左親指シフトキーのキーコード (既定 SPACE)。単独タップ時はこのキー自身を送出。
       変更した場合はキーマップ側の &nc <キーコード> も合わせること。
+  continuous-shift:
+    type: int
+    default: 0
+    description: |
+      連続シフト (1=オン, 0=オフ)。オンの場合、親指キーを押している間は
+      後続の文字キーにもシフトをかけ続ける。オフの場合、シフトは同時打鍵が
+      成立した1文字のみで、次にシフトするには親指キーを押し直す。
   right-thumb:
     type: int
     description: |

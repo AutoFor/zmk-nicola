@@ -21,6 +21,13 @@ properties:
     description: |
       【このブランチ(range-pct)では未使用】mainブランチ(固定ms窓方式)用の設定。
       同じキーマップを両ブランチで使えるように宣言だけしてある。
+  continuous-shift:
+    type: int
+    default: 0
+    description: |
+      連続シフト (1=オン, 0=オフ)。オンの場合、親指キーを押している間は
+      後続の文字キーにもシフトをかけ続ける。オフの場合、シフトは同時打鍵が
+      成立した1文字のみで、次にシフトするには親指キーを押し直す。
   left-thumb:
     type: int
     description: |

@@ -7,13 +7,13 @@ compatible: "zmk,behavior-nicola"
 include: one_param.yaml
 
 properties:
-  range-pct:
+  timeout-ms:
     type: int
-    default: 65
+    default: 130
     description: |
-      同時打鍵と判定される時間範囲 (%, 1-100)。やまぶきRと同方式:
-      文字キーの押下時点を0、離す(または次のキーを押す)時点を100として、
-      その前半◯%以内に親指キーが押されたら同時打鍵とみなす。
+      文字キー押下から親指キー押下までを同時打鍵とみなす時間 (ms)。
+      この時間を超えて親指キーが押された場合、保留中の文字キーは
+      単独打鍵として確定される。判定・出力は親指キー押下の瞬間に行う。
       親指キー先行(連続シフト)には適用されない。
   left-thumb:
     type: int

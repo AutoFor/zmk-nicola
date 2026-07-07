@@ -271,9 +271,71 @@ static int behavior_nicola_init(const struct device *dev) {
     return 0;
 }
 
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_METADATA)
+
+/* ZMK Studio 用パラメータ一覧。ラベルは「単独 左親指 右親指 (物理キー)」。
+ * nmap の全キー + 親指シフトキー2つを網羅すること
+ * (リストにない値は Studio が不明値として扱うため)。 */
+#define NC_VAL(_label, _key)                                                                       \
+    { .display_name = _label, .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE, .value = _key }
+
+static const struct behavior_parameter_value_metadata param_values[] = {
+    /* 上段 */
+    NC_VAL("。 ぁ − (Q)", Q),
+    NC_VAL("か え が (W)", W),
+    NC_VAL("た り だ (E)", E),
+    NC_VAL("こ ゃ ご (R)", R),
+    NC_VAL("さ れ ざ (T)", T),
+    NC_VAL("ら ぱ よ (Y)", Y),
+    NC_VAL("ち ぢ に (U)", U),
+    NC_VAL("く ぐ る (I)", I),
+    NC_VAL("つ づ ま (O)", O),
+    NC_VAL("、 ぴ ぇ (P)", P),
+    /* 中段 */
+    NC_VAL("う を ゔ (A)", A),
+    NC_VAL("し あ じ (S)", S),
+    NC_VAL("て な で (D)", D),
+    NC_VAL("け ゅ げ (F)", F),
+    NC_VAL("せ も ぜ (G)", G),
+    NC_VAL("は ば み (H)", H),
+    NC_VAL("と ど お (J)", J),
+    NC_VAL("き ぎ の (K)", K),
+    NC_VAL("い ぽ ょ (L)", L),
+    NC_VAL("ん − っ (;)", SEMI),
+    /* 下段 */
+    NC_VAL("。 ぅ − (Z)", Z),
+    NC_VAL("ひ ー び (X)", X),
+    NC_VAL("す ろ ず (C)", C),
+    NC_VAL("ふ や ぶ (V)", V),
+    NC_VAL("へ ぃ べ (B)", B),
+    NC_VAL("め ぷ ぬ (N)", N),
+    NC_VAL("そ ぞ ゆ (M)", M),
+    NC_VAL("ね ぺ む (,)", COMMA),
+    NC_VAL("ほ ぼ わ (.)", DOT),
+    NC_VAL("／ ？ ぉ (/)", SLASH),
+    /* 親指シフトキー */
+    NC_VAL("左親指シフト (Space)", SPACE),
+    NC_VAL("右親指シフト (変換)", INT4),
+};
+
+static const struct behavior_parameter_metadata_set param_metadata_set[] = {{
+    .param1_values = param_values,
+    .param1_values_len = ARRAY_SIZE(param_values),
+}};
+
+static const struct behavior_parameter_metadata metadata = {
+    .sets_len = ARRAY_SIZE(param_metadata_set),
+    .sets = param_metadata_set,
+};
+
+#endif /* IS_ENABLED(CONFIG_ZMK_BEHAVIOR_METADATA) */
+
 static const struct behavior_driver_api behavior_nicola_driver_api = {
     .binding_pressed = on_nicola_pressed,
     .binding_released = on_nicola_released,
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_METADATA)
+    .parameter_metadata = &metadata,
+#endif
 };
 
 #define NC_INST(n)                                                                                 \

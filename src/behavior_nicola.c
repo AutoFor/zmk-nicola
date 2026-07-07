@@ -120,6 +120,12 @@ static const struct nc_map *nc_find(uint32_t key) {
     return NULL;
 }
 
+/* ログ用: キーの単独面ローマ字を識別名として返す */
+static const char *nc_name(uint32_t key) {
+    const struct nc_map *m = nc_find(key);
+    return m ? m->t : "?";
+}
+
 static void nc_tap(uint32_t encoded, int64_t ts) {
     raise_zmk_keycode_state_changed_from_encoded(encoded, true, ts);
     raise_zmk_keycode_state_changed_from_encoded(encoded, false, ts);
@@ -165,13 +171,9 @@ static void nc_type_with(int64_t ts, bool lsh, bool rsh) {
         if (m == NULL) {
             continue;
         }
-        if (lsh) {
-            nc_send_romaji(m->l, ts);
-        } else if (rsh) {
-            nc_send_romaji(m->r, ts);
-        } else {
-            nc_send_romaji(m->t, ts);
-        }
+        const char *out = lsh ? m->l : (rsh ? m->r : m->t);
+        LOG_INF("NC out '%s' plane=%c (key '%s')", out, lsh ? 'L' : (rsh ? 'R' : '-'), m->t);
+        nc_send_romaji(out, ts);
     }
     nc_chrcount = 0;
     nc_keycount = (nc_l_eff() ? 1 : 0) + (nc_r_eff() ? 1 : 0);
@@ -196,6 +198,10 @@ static void nc_judge_resolve(int64_t end_ts) {
     const int64_t total = end_ts - nc_last_chr_ts;
     const int64_t pos = nc_judge_ts - nc_last_chr_ts;
     const bool simul = (total <= 0) || (pos * 100 <= total * nc_range_pct);
+    LOG_INF("NC judge %cthumb: pos=%dms / total=%dms = %d%% (range=%d%%) -> %s",
+            judge == 1 ? 'L' : 'R', (int32_t)pos, (int32_t)total,
+            total > 0 ? (int32_t)(pos * 100 / total) : 0, nc_range_pct,
+            simul ? "SIMUL" : "LATE(single)");
     if (simul) {
         nc_type_with(end_ts, judge == 1, judge == 2);
         if (judge == 1) {
@@ -255,6 +261,9 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
             /* 文字キー保留中: 同時打鍵かどうかの判定はインターバル終端まで保留 */
             nc_judge = 1;
             nc_judge_ts = ts;
+            LOG_INF("NC Lthumb dn: +%dms after char, judge pending", (int32_t)(ts - nc_last_chr_ts));
+        } else {
+            LOG_INF("NC Lthumb dn (no pending char)");
         }
         return ZMK_BEHAVIOR_OPAQUE;
     }
@@ -265,6 +274,9 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         if (nc_chrcount > 0 && nc_judge == 0) {
             nc_judge = 2;
             nc_judge_ts = ts;
+            LOG_INF("NC Rthumb dn: +%dms after char, judge pending", (int32_t)(ts - nc_last_chr_ts));
+        } else {
+            LOG_INF("NC Rthumb dn (no pending char)");
         }
         return ZMK_BEHAVIOR_OPAQUE;
     }
@@ -276,6 +288,8 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         if (nc_chrcount < NC_BUF_MAX) {
             nc_buf[nc_chrcount++] = key;
         }
+        LOG_INF("NC dn '%s' pend=%d L=%d R=%d", nc_name(key), nc_chrcount, (int)nc_l_held,
+                (int)nc_r_held);
         nc_last_chr_ts = ts;
         nc_keycount++;
         if (nc_keycount > 1) { /* 2打目以降は即時確定 (親指先行ならシフト) */
@@ -320,6 +334,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
     if (key == nc_lthumb) {
         if (nc_judge == 1) {
             /* 文字キーより先に親指が離れた = 押下が完全に重なっている → 同時打鍵 */
+            LOG_INF("NC Lthumb up before char up -> full overlap, SIMUL");
             nc_type_with(ts, true, false);
             nc_l_used = true;
             nc_judge = 0;
@@ -328,6 +343,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         nc_l_held = false;
         nc_l_used = false;
         if (tap) {
+            LOG_INF("NC Lthumb up -> solo tap");
             nc_tap(nc_lthumb, ts); /* 単独タップ = そのキー自身 (既定Space) */
         } else if (nc_chrcount > 0) {
             nc_type(ts);
@@ -337,6 +353,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
     }
     if (key == nc_rthumb) {
         if (nc_judge == 2) {
+            LOG_INF("NC Rthumb up before char up -> full overlap, SIMUL");
             nc_type_with(ts, false, true);
             nc_r_used = true;
             nc_judge = 0;
@@ -345,6 +362,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         nc_r_held = false;
         nc_r_used = false;
         if (tap) {
+            LOG_INF("NC Rthumb up -> solo tap");
             nc_tap(nc_rthumb, ts); /* 単独タップ = そのキー自身 (既定変換) */
         } else if (nc_chrcount > 0) {
             nc_type(ts);

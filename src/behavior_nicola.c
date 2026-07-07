@@ -114,6 +114,12 @@ static const struct nc_map *nc_find(uint32_t key) {
     return NULL;
 }
 
+/* ログ用: キーの単独面ローマ字を識別名として返す */
+static const char *nc_name(uint32_t key) {
+    const struct nc_map *m = nc_find(key);
+    return m ? m->t : "?";
+}
+
 static void nc_tap(uint32_t encoded, int64_t ts) {
     raise_zmk_keycode_state_changed_from_encoded(encoded, true, ts);
     raise_zmk_keycode_state_changed_from_encoded(encoded, false, ts);
@@ -159,13 +165,9 @@ static void nc_type_with(int64_t ts, bool lsh, bool rsh) {
         if (m == NULL) {
             continue;
         }
-        if (lsh) {
-            nc_send_romaji(m->l, ts);
-        } else if (rsh) {
-            nc_send_romaji(m->r, ts);
-        } else {
-            nc_send_romaji(m->t, ts);
-        }
+        const char *out = lsh ? m->l : (rsh ? m->r : m->t);
+        LOG_INF("NC out '%s' plane=%c (key '%s')", out, lsh ? 'L' : (rsh ? 'R' : '-'), m->t);
+        nc_send_romaji(out, ts);
     }
     nc_chrcount = 0;
     nc_keycount = (nc_l_eff() ? 1 : 0) + (nc_r_eff() ? 1 : 0);
@@ -204,8 +206,17 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
 
     if (key == nc_lthumb) {
         /* 判定窓を外れた保留文字は同時打鍵不成立: 先に単独打ちで確定 */
-        if (nc_chrcount > 0 && (ts - nc_last_chr_ts) > nc_timeout_ms) {
-            nc_type(ts);
+        if (nc_chrcount > 0) {
+            const int32_t dt = (int32_t)(ts - nc_last_chr_ts);
+            if (dt > nc_timeout_ms) {
+                LOG_INF("NC Lthumb dn: dt=%dms > win=%dms -> LATE (type single first)", dt,
+                        nc_timeout_ms);
+                nc_type(ts);
+            } else {
+                LOG_INF("NC Lthumb dn: dt=%dms <= win=%dms -> SIMUL", dt, nc_timeout_ms);
+            }
+        } else {
+            LOG_INF("NC Lthumb dn (no pending char)");
         }
         nc_l_held = true;
         nc_l_used = false;
@@ -218,8 +229,17 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         return ZMK_BEHAVIOR_OPAQUE;
     }
     if (key == nc_rthumb) {
-        if (nc_chrcount > 0 && (ts - nc_last_chr_ts) > nc_timeout_ms) {
-            nc_type(ts);
+        if (nc_chrcount > 0) {
+            const int32_t dt = (int32_t)(ts - nc_last_chr_ts);
+            if (dt > nc_timeout_ms) {
+                LOG_INF("NC Rthumb dn: dt=%dms > win=%dms -> LATE (type single first)", dt,
+                        nc_timeout_ms);
+                nc_type(ts);
+            } else {
+                LOG_INF("NC Rthumb dn: dt=%dms <= win=%dms -> SIMUL", dt, nc_timeout_ms);
+            }
+        } else {
+            LOG_INF("NC Rthumb dn (no pending char)");
         }
         nc_r_held = true;
         nc_r_used = false;
@@ -236,6 +256,8 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         if (nc_chrcount < NC_BUF_MAX) {
             nc_buf[nc_chrcount++] = key;
         }
+        LOG_INF("NC dn '%s' pend=%d L=%d R=%d", nc_name(key), nc_chrcount, (int)nc_l_held,
+                (int)nc_r_held);
         nc_last_chr_ts = ts;
         nc_keycount++;
         if (nc_keycount > 1) { /* 2打目以降は即時確定 (親指先行ならシフト) */
@@ -282,6 +304,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         nc_l_held = false;
         nc_l_used = false;
         if (tap) {
+            LOG_INF("NC Lthumb up -> solo tap");
             nc_tap(nc_lthumb, ts); /* 単独タップ = そのキー自身 (既定Space) */
         } else if (nc_chrcount > 0) {
             nc_type(ts);
@@ -294,6 +317,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         nc_r_held = false;
         nc_r_used = false;
         if (tap) {
+            LOG_INF("NC Rthumb up -> solo tap");
             nc_tap(nc_rthumb, ts); /* 単独タップ = そのキー自身 (既定変換) */
         } else if (nc_chrcount > 0) {
             nc_type(ts);

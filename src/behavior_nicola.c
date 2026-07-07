@@ -58,12 +58,26 @@ static const struct nc_map nmap[] = {
 
     {N, "me", "pu", "nu"},   {M, "so", "zo", "yu"},   {COMMA, "ne", "pe", "mu"},
     {DOT, "ho", "bo", "wa"}, {SLASH, "/", "?", "lo"},
+
+    /* NICOLA-J規格 D11: @キー 単独=、(読点)。シフト面(゛)はローマ字入力では表現不能のため未割当 */
+    {LBKT, ",", "", ""},
 };
+
+/* ---- 設定 ---- */
+struct behavior_nicola_config {
+    int32_t timeout_ms;
+};
+
+/* 同時打鍵判定窓 (ms)。文字キー押下から親指キー押下までがこの時間以内なら
+ * 同時打鍵とみなす。DTの timeout-ms (1-100, 既定65) で設定。
+ * 親指キー先行(連続シフト)には適用しない。 */
+static int32_t nc_timeout_ms = 65;
 
 /* ---- 状態 ---- */
 #define NC_BUF_MAX 8
 
 static uint32_t nc_buf[NC_BUF_MAX]; /* 未解決の文字キー */
+static int64_t nc_last_chr_ts;      /* 最後の文字キー押下時刻 */
 static int nc_chrcount;             /* 文字キーのカウンタ */
 static int nc_keycount;             /* 親指キーも含めたカウンタ */
 static bool nc_l_held, nc_r_held;   /* 親指キーの物理押下状態 */
@@ -168,6 +182,10 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
     }
 
     if (key == NC_LTHUMB) {
+        /* 判定窓を外れた保留文字は同時打鍵不成立: 先に単独打ちで確定 */
+        if (nc_chrcount > 0 && (ts - nc_last_chr_ts) > nc_timeout_ms) {
+            nc_type(ts);
+        }
         nc_l_held = true;
         nc_l_used = false;
         nc_keycount++;
@@ -178,6 +196,9 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         return ZMK_BEHAVIOR_OPAQUE;
     }
     if (key == NC_RTHUMB) {
+        if (nc_chrcount > 0 && (ts - nc_last_chr_ts) > nc_timeout_ms) {
+            nc_type(ts);
+        }
         nc_r_held = true;
         nc_r_used = false;
         nc_keycount++;
@@ -192,6 +213,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         if (nc_chrcount < NC_BUF_MAX) {
             nc_buf[nc_chrcount++] = key;
         }
+        nc_last_chr_ts = ts;
         nc_keycount++;
         if (nc_keycount > 1) { /* 2打目以降は即時確定 (シフト中なら連続シフト) */
             nc_type(ts);
@@ -267,6 +289,8 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
 }
 
 static int behavior_nicola_init(const struct device *dev) {
+    const struct behavior_nicola_config *cfg = dev->config;
+    nc_timeout_ms = CLAMP(cfg->timeout_ms, 1, 100);
     nc_reset();
     return 0;
 }
@@ -313,6 +337,7 @@ static const struct behavior_parameter_value_metadata param_values[] = {
     NC_VAL("ね ぺ む (,)", COMMA),
     NC_VAL("ほ ぼ わ (.)", DOT),
     NC_VAL("／ ？ ぉ (/)", SLASH),
+    NC_VAL("、 − − (@)", LBKT),
     /* 親指シフトキー */
     NC_VAL("左親指シフト (Space)", SPACE),
     NC_VAL("右親指シフト (変換)", INT4),
@@ -339,7 +364,11 @@ static const struct behavior_driver_api behavior_nicola_driver_api = {
 };
 
 #define NC_INST(n)                                                                                 \
-    BEHAVIOR_DT_INST_DEFINE(n, behavior_nicola_init, NULL, NULL, NULL, POST_KERNEL,                \
-                            CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &behavior_nicola_driver_api);
+    static const struct behavior_nicola_config behavior_nicola_config_##n = {                      \
+        .timeout_ms = DT_INST_PROP(n, timeout_ms),                                                 \
+    };                                                                                             \
+    BEHAVIOR_DT_INST_DEFINE(n, behavior_nicola_init, NULL, NULL, &behavior_nicola_config_##n,      \
+                            POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,                      \
+                            &behavior_nicola_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(NC_INST)

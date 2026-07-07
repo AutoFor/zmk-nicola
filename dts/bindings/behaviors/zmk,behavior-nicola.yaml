@@ -5,3 +5,12 @@ description: NICOLA (oyayubi shift) behavior
 compatible: "zmk,behavior-nicola"
 
 include: one_param.yaml
+
+properties:
+  timeout-ms:
+    type: int
+    default: 65
+    description: |
+      文字キー押下から親指キー押下までを同時打鍵とみなす時間 (ms, 1-100)。
+      窓を外れた場合、保留中の文字キーは単独打鍵として確定される。
+      親指キー先行(連続シフト)には適用されない。

@@ -65,19 +65,25 @@ static const struct nc_map nmap[] = {
 
 /* ---- 設定 ---- */
 struct behavior_nicola_config {
-    int32_t timeout_ms;
+    int32_t range_pct;
 };
 
-/* 同時打鍵判定窓 (ms)。文字キー押下から親指キー押下までがこの時間以内なら
- * 同時打鍵とみなす。DTの timeout-ms (1-100, 既定65) で設定。
- * 親指キー先行(連続シフト)には適用しない。 */
-static int32_t nc_timeout_ms = 65;
+/* 同時打鍵と判定される時間範囲 (%, 1-100)。やまぶきRと同方式:
+ * 文字キーの押下時点を0、離す(または次のキーを押す)時点を100として、
+ * その前半◯%以内に親指キーが押されたら同時打鍵とみなす。
+ * 親指キー先行(連続シフト)には適用しない。DTの range-pct で設定。 */
+static int32_t nc_range_pct = 65;
 
 /* ---- 状態 ---- */
 #define NC_BUF_MAX 8
 
 static uint32_t nc_buf[NC_BUF_MAX]; /* 未解決の文字キー */
 static int64_t nc_last_chr_ts;      /* 最後の文字キー押下時刻 */
+
+/* 文字キー保留中に親指キーが押されたときの判定待ち状態。
+ * 判定はインターバル終端(文字キーrelease/次キー押下)で行う */
+static uint8_t nc_judge;     /* 0=なし 1=左親指 2=右親指 */
+static int64_t nc_judge_ts;  /* 判定待ち親指キーの押下時刻 */
 static int nc_chrcount;             /* 文字キーのカウンタ */
 static int nc_keycount;             /* 親指キーも含めたカウンタ */
 static bool nc_l_held, nc_r_held;   /* 親指キーの物理押下状態 */
@@ -132,18 +138,18 @@ static void nc_send_romaji(const char *s, int64_t ts) {
     }
 }
 
-/* バッファの文字キーを現在のシフト状態で確定する。
+/* バッファの文字キーを指定シフト面で確定する。
  * 原典の ncl_type() + ncl_clear() に相当するが、親指キーが物理的に
  * 押されている間はシフト状態(keycount=1)を維持する(連続シフト)。 */
-static void nc_type(int64_t ts) {
+static void nc_type_with(int64_t ts, bool lsh, bool rsh) {
     for (int i = 0; i < nc_chrcount; i++) {
         const struct nc_map *m = nc_find(nc_buf[i]);
         if (m == NULL) {
             continue;
         }
-        if (nc_l_held) {
+        if (lsh) {
             nc_send_romaji(m->l, ts);
-        } else if (nc_r_held) {
+        } else if (rsh) {
             nc_send_romaji(m->r, ts);
         } else {
             nc_send_romaji(m->t, ts);
@@ -153,12 +159,53 @@ static void nc_type(int64_t ts) {
     nc_keycount = (nc_l_held || nc_r_held) ? 1 : 0;
 }
 
+/* 現在の親指押下状態で確定 */
+static void nc_type(int64_t ts) { nc_type_with(ts, nc_l_held, nc_r_held); }
+
+/* 判定待ちの同時打鍵をインターバル終端 end_ts で確定する。
+ * やまぶきR方式: 文字キー押下(0)〜終端(100)のうち、親指キー押下位置が
+ * range-pct% 以内なら同時打鍵、外れたら文字キーは単独打ちで確定
+ * (親指はそのまま保持され、以降の文字への連続シフトとして生きる)。 */
+static void nc_judge_resolve(int64_t end_ts) {
+    if (nc_judge == 0) {
+        return;
+    }
+    const uint8_t judge = nc_judge;
+    nc_judge = 0;
+    if (nc_chrcount == 0) {
+        return;
+    }
+    const int64_t total = end_ts - nc_last_chr_ts;
+    const int64_t pos = nc_judge_ts - nc_last_chr_ts;
+    const bool simul = (total <= 0) || (pos * 100 <= total * nc_range_pct);
+    if (simul) {
+        nc_type_with(end_ts, judge == 1, judge == 2);
+        if (judge == 1) {
+            nc_l_used = true;
+        } else {
+            nc_r_used = true;
+        }
+    } else {
+        nc_type_with(end_ts, false, false);
+    }
+}
+
+/* 保留中をすべて吐き出す (判定待ちがあれば判定してから) */
+static void nc_flush(int64_t ts) {
+    if (nc_judge != 0) {
+        nc_judge_resolve(ts);
+    } else {
+        nc_type(ts);
+    }
+}
+
 static void nc_reset(void) {
     nc_chrcount = 0;
     nc_keycount = 0;
     nc_l_held = nc_r_held = false;
     nc_l_used = nc_r_used = false;
     nc_raw_n = 0;
+    nc_judge = 0;
 }
 
 static bool nc_mods_active(void) {
@@ -173,7 +220,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
 
     /* Ctrl/Alt/GUI/Shift 押下中はNICOLA処理せず素通し */
     if (nc_mods_active()) {
-        nc_type(ts); /* 未解決分を吐き出してから */
+        nc_flush(ts); /* 未解決分を吐き出してから */
         if (nc_raw_n < NC_BUF_MAX) {
             nc_raw[nc_raw_n++] = key;
         }
@@ -182,40 +229,37 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
     }
 
     if (key == NC_LTHUMB) {
-        /* 判定窓を外れた保留文字は同時打鍵不成立: 先に単独打ちで確定 */
-        if (nc_chrcount > 0 && (ts - nc_last_chr_ts) > nc_timeout_ms) {
-            nc_type(ts);
-        }
         nc_l_held = true;
         nc_l_used = false;
         nc_keycount++;
-        if (nc_keycount > 1) { /* 保留中の文字キーと同時打鍵成立 */
-            nc_type(ts);
-            nc_l_used = true;
+        if (nc_chrcount > 0 && nc_judge == 0) {
+            /* 文字キー保留中: 同時打鍵かどうかの判定はインターバル終端まで保留 */
+            nc_judge = 1;
+            nc_judge_ts = ts;
         }
         return ZMK_BEHAVIOR_OPAQUE;
     }
     if (key == NC_RTHUMB) {
-        if (nc_chrcount > 0 && (ts - nc_last_chr_ts) > nc_timeout_ms) {
-            nc_type(ts);
-        }
         nc_r_held = true;
         nc_r_used = false;
         nc_keycount++;
-        if (nc_keycount > 1) {
-            nc_type(ts);
-            nc_r_used = true;
+        if (nc_chrcount > 0 && nc_judge == 0) {
+            nc_judge = 2;
+            nc_judge_ts = ts;
         }
         return ZMK_BEHAVIOR_OPAQUE;
     }
 
     if (nc_find(key) != NULL) {
+        if (nc_judge != 0) { /* 次キー押下 = 前の文字のインターバル終端 */
+            nc_judge_resolve(ts);
+        }
         if (nc_chrcount < NC_BUF_MAX) {
             nc_buf[nc_chrcount++] = key;
         }
         nc_last_chr_ts = ts;
         nc_keycount++;
-        if (nc_keycount > 1) { /* 2打目以降は即時確定 (シフト中なら連続シフト) */
+        if (nc_keycount > 1) { /* 2打目以降は即時確定 (親指先行なら連続シフト) */
             nc_type(ts);
             if (nc_l_held) {
                 nc_l_used = true;
@@ -228,7 +272,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
     }
 
     /* テーブル外のキーは素通し */
-    nc_type(ts);
+    nc_flush(ts);
     if (nc_raw_n < NC_BUF_MAX) {
         nc_raw[nc_raw_n++] = key;
     }
@@ -254,6 +298,12 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
     }
 
     if (key == NC_LTHUMB) {
+        if (nc_judge == 1) {
+            /* 文字キーより先に親指が離れた = 押下が完全に重なっている → 同時打鍵 */
+            nc_type_with(ts, true, false);
+            nc_l_used = true;
+            nc_judge = 0;
+        }
         bool tap = !nc_l_used && nc_chrcount == 0;
         nc_l_held = false;
         nc_l_used = false;
@@ -266,6 +316,11 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         return ZMK_BEHAVIOR_OPAQUE;
     }
     if (key == NC_RTHUMB) {
+        if (nc_judge == 2) {
+            nc_type_with(ts, false, true);
+            nc_r_used = true;
+            nc_judge = 0;
+        }
         bool tap = !nc_r_used && nc_chrcount == 0;
         nc_r_held = false;
         nc_r_used = false;
@@ -279,7 +334,9 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
     }
 
     if (nc_find(key) != NULL) {
-        if (nc_chrcount > 0) { /* 単独打鍵: releaseで確定 */
+        if (nc_judge != 0) { /* 文字キーrelease = インターバル終端: ここで判定 */
+            nc_judge_resolve(ts);
+        } else if (nc_chrcount > 0) { /* 単独打鍵: releaseで確定 */
             nc_type(ts);
         }
         return ZMK_BEHAVIOR_OPAQUE;
@@ -290,7 +347,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
 
 static int behavior_nicola_init(const struct device *dev) {
     const struct behavior_nicola_config *cfg = dev->config;
-    nc_timeout_ms = CLAMP(cfg->timeout_ms, 1, 100);
+    nc_range_pct = CLAMP(cfg->range_pct, 1, 100);
     nc_reset();
     return 0;
 }
@@ -365,7 +422,7 @@ static const struct behavior_driver_api behavior_nicola_driver_api = {
 
 #define NC_INST(n)                                                                                 \
     static const struct behavior_nicola_config behavior_nicola_config_##n = {                      \
-        .timeout_ms = DT_INST_PROP(n, timeout_ms),                                                 \
+        .range_pct = DT_INST_PROP(n, range_pct),                                                   \
     };                                                                                             \
     BEHAVIOR_DT_INST_DEFINE(n, behavior_nicola_init, NULL, NULL, &behavior_nicola_config_##n,      \
                             POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,                      \

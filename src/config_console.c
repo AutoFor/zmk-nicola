@@ -55,21 +55,21 @@ static void handle_line(struct k_work *work) {
     if (strcmp(cmd, "get") == 0) {
         struct nc_settings s;
         nc_cfg_get(&s);
-        snprintf(buf, sizeof(buf), "ok timeout=%d range=%d cont=%d log=%d\n", s.timeout_ms,
-                 s.range_pct, (int)s.cont, (int)s.log);
+        snprintf(buf, sizeof(buf), "ok timeout=%d range=%d mode=%d cont=%d log=%d\n", s.timeout_ms,
+                 s.range_pct, s.mode, (int)s.cont, (int)s.log);
         respond(buf);
     } else if (strcmp(cmd, "set") == 0) {
         char *key = strtok_r(NULL, " \t", &saveptr);
         char *val = strtok_r(NULL, " \t", &saveptr);
         if (key == NULL || val == NULL) {
-            respond("err usage: set <timeout|range|cont|log> <value>\n");
+            respond("err usage: set <timeout|range|mode|cont|log> <value>\n");
             return;
         }
         if (nc_cfg_set(key, atoi(val)) == 0) {
             struct nc_settings s;
             nc_cfg_get(&s);
-            snprintf(buf, sizeof(buf), "ok timeout=%d range=%d cont=%d log=%d\n", s.timeout_ms,
-                     s.range_pct, (int)s.cont, (int)s.log);
+            snprintf(buf, sizeof(buf), "ok timeout=%d range=%d mode=%d cont=%d log=%d\n", s.timeout_ms,
+                     s.range_pct, s.mode, (int)s.cont, (int)s.log);
             respond(buf);
         } else {
             respond("err unsupported key on this firmware\n");

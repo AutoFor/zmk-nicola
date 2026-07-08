@@ -96,6 +96,7 @@ static const struct nc_map nmap[] = {
 /* ---- 設定 ---- */
 struct behavior_nicola_config {
     int32_t timeout_ms;
+    int32_t range_pct;
     int32_t cont;
     uint32_t lthumb;
     uint32_t rthumb;
@@ -110,11 +111,24 @@ static bool nc_cont = false;
  * 親指キー先行(連続シフト)には適用しない。 */
 static int32_t nc_timeout_ms = 130;
 
+/* 判定方式: 0=ms方式(固定窓・先判定・即出力) 1=%方式(やまぶきR正本・後判定)。
+ * 実行時に set mode で切替可能、フラッシュに保存される */
+static int32_t nc_mode = 0;
+
+/* %方式: 同時打鍵と判定される時間範囲 (%, 1-100)。やまぶきR正本:
+ * 文字キー押下=0、離す(or次キー)=100として、前半◯%以内の親指押下を同時とみなす */
+static int32_t nc_range_pct = 65;
+
 /* ---- 状態 ---- */
 #define NC_BUF_MAX 8
 
 static uint32_t nc_buf[NC_BUF_MAX]; /* 未解決の文字キー */
 static int64_t nc_last_chr_ts;      /* 最後の文字キー押下時刻 */
+
+/* %方式: 文字キー保留中に親指キーが押されたときの判定待ち状態。
+ * 判定はインターバル終端(文字キーrelease/次キー押下)で行う */
+static uint8_t nc_judge;    /* 0=なし 1=左親指 2=右親指 */
+static int64_t nc_judge_ts; /* 判定待ち親指キーの押下時刻 */
 static int nc_chrcount;             /* 文字キーのカウンタ */
 static int nc_keycount;             /* 親指キーも含めたカウンタ */
 static bool nc_l_held, nc_r_held;   /* 親指キーの物理押下状態 */
@@ -204,12 +218,55 @@ static void nc_type_with(int64_t ts, bool lsh, bool rsh) {
 /* 現在の実効シフト状態で確定 */
 static void nc_type(int64_t ts) { nc_type_with(ts, nc_l_eff(), nc_r_eff()); }
 
+/* %方式: 判定待ちの同時打鍵をインターバル終端 end_ts で確定する。
+ * やまぶきR正本: 文字キー押下(0)〜終端(文字キーrelease/次キー押下=100)のうち、
+ * 親指キー押下位置が range-pct% 以内なら同時打鍵、外れたら単独打ちで確定。
+ * 親指キーが先に離されていても判定は終端まで持ち越す(正本準拠)。 */
+static void nc_judge_resolve(int64_t end_ts) {
+    if (nc_judge == 0) {
+        return;
+    }
+    const uint8_t judge = nc_judge;
+    nc_judge = 0;
+    if (nc_chrcount == 0) {
+        return;
+    }
+    const int64_t total = end_ts - nc_last_chr_ts;
+    const int64_t pos = nc_judge_ts - nc_last_chr_ts;
+    const bool simul = (total <= 0) || (pos * 100 <= total * nc_range_pct);
+    nc_emit("NC judge %cthumb: pos=%dms / total=%dms = %d%% (range=%d%%) -> %s",
+            judge == 1 ? 'L' : 'R', (int32_t)pos, (int32_t)total,
+            total > 0 ? (int32_t)(pos * 100 / total) : 0, nc_range_pct,
+            simul ? "SIMUL" : "LATE(single)");
+    if (simul) {
+        nc_type_with(end_ts, judge == 1, judge == 2);
+        if (judge == 1) {
+            nc_l_used = true;
+        } else {
+            nc_r_used = true;
+        }
+        nc_recount();
+    } else {
+        nc_type_with(end_ts, false, false);
+    }
+}
+
+/* 保留中をすべて吐き出す (判定待ちがあれば判定してから) */
+static void nc_flush(int64_t ts) {
+    if (nc_judge != 0) {
+        nc_judge_resolve(ts);
+    } else {
+        nc_type(ts);
+    }
+}
+
 static void nc_reset(void) {
     nc_chrcount = 0;
     nc_keycount = 0;
     nc_l_held = nc_r_held = false;
     nc_l_used = nc_r_used = false;
     nc_raw_n = 0;
+    nc_judge = 0;
 }
 
 static bool nc_mods_active(void) {
@@ -224,7 +281,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
 
     /* Ctrl/Alt/GUI/Shift 押下中はNICOLA処理せず素通し */
     if (nc_mods_active()) {
-        nc_type(ts); /* 未解決分を吐き出してから */
+        nc_flush(ts); /* 未解決分を吐き出してから */
         if (nc_raw_n < NC_BUF_MAX) {
             nc_raw[nc_raw_n++] = key;
         }
@@ -233,15 +290,23 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
     }
 
     if (key == nc_lthumb) {
-        /* 判定窓を外れた保留文字は同時打鍵不成立: 先に単独打ちで確定 */
         if (nc_chrcount > 0) {
-            const int32_t dt = (int32_t)(ts - nc_last_chr_ts);
-            if (dt > nc_timeout_ms) {
-                nc_emit("NC Lthumb dn: dt=%dms > win=%dms -> LATE (type single first)", dt,
-                        nc_timeout_ms);
-                nc_type(ts);
-            } else {
-                nc_emit("NC Lthumb dn: dt=%dms <= win=%dms -> SIMUL", dt, nc_timeout_ms);
+            if (nc_mode == 1) { /* %方式: 判定はインターバル終端まで保留 */
+                if (nc_judge == 0) {
+                    nc_judge = 1;
+                    nc_judge_ts = ts;
+                    nc_emit("NC Lthumb dn: +%dms after char, judge pending",
+                            (int32_t)(ts - nc_last_chr_ts));
+                }
+            } else { /* ms方式: 窓を外れた保留文字は先に単独打ちで確定 */
+                const int32_t dt = (int32_t)(ts - nc_last_chr_ts);
+                if (dt > nc_timeout_ms) {
+                    nc_emit("NC Lthumb dn: dt=%dms > win=%dms -> LATE (type single first)", dt,
+                            nc_timeout_ms);
+                    nc_type(ts);
+                } else {
+                    nc_emit("NC Lthumb dn: dt=%dms <= win=%dms -> SIMUL", dt, nc_timeout_ms);
+                }
             }
         } else {
             nc_emit("NC Lthumb dn (no pending char)");
@@ -249,7 +314,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         nc_l_held = true;
         nc_l_used = false;
         nc_keycount++;
-        if (nc_keycount > 1) { /* 保留中の文字キーと同時打鍵成立 */
+        if (nc_mode == 0 && nc_keycount > 1) { /* ms方式: 保留文字と同時打鍵成立 */
             nc_type(ts);
             nc_l_used = true;
             nc_recount();
@@ -258,13 +323,22 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
     }
     if (key == nc_rthumb) {
         if (nc_chrcount > 0) {
-            const int32_t dt = (int32_t)(ts - nc_last_chr_ts);
-            if (dt > nc_timeout_ms) {
-                nc_emit("NC Rthumb dn: dt=%dms > win=%dms -> LATE (type single first)", dt,
-                        nc_timeout_ms);
-                nc_type(ts);
+            if (nc_mode == 1) {
+                if (nc_judge == 0) {
+                    nc_judge = 2;
+                    nc_judge_ts = ts;
+                    nc_emit("NC Rthumb dn: +%dms after char, judge pending",
+                            (int32_t)(ts - nc_last_chr_ts));
+                }
             } else {
-                nc_emit("NC Rthumb dn: dt=%dms <= win=%dms -> SIMUL", dt, nc_timeout_ms);
+                const int32_t dt = (int32_t)(ts - nc_last_chr_ts);
+                if (dt > nc_timeout_ms) {
+                    nc_emit("NC Rthumb dn: dt=%dms > win=%dms -> LATE (type single first)", dt,
+                            nc_timeout_ms);
+                    nc_type(ts);
+                } else {
+                    nc_emit("NC Rthumb dn: dt=%dms <= win=%dms -> SIMUL", dt, nc_timeout_ms);
+                }
             }
         } else {
             nc_emit("NC Rthumb dn (no pending char)");
@@ -272,7 +346,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         nc_r_held = true;
         nc_r_used = false;
         nc_keycount++;
-        if (nc_keycount > 1) {
+        if (nc_mode == 0 && nc_keycount > 1) {
             nc_type(ts);
             nc_r_used = true;
             nc_recount();
@@ -281,6 +355,9 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
     }
 
     if (nc_find(key) != NULL) {
+        if (nc_judge != 0) { /* %方式: 次キー押下 = 前の文字のインターバル終端 */
+            nc_judge_resolve(ts);
+        }
         if (nc_chrcount < NC_BUF_MAX) {
             nc_buf[nc_chrcount++] = key;
         }
@@ -334,7 +411,8 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         if (tap) {
             nc_emit("NC Lthumb up -> solo tap");
             nc_tap(nc_lthumb, ts); /* 単独タップ = そのキー自身 (既定Space) */
-        } else if (nc_chrcount > 0) {
+        } else if (nc_chrcount > 0 && nc_judge == 0) {
+            /* %方式の判定待ち(judge!=0)は文字キーの終端まで持ち越す(やまぶきR正本準拠) */
             nc_type(ts);
         }
         nc_keycount = (nc_r_eff() ? 1 : 0) + nc_chrcount;
@@ -347,7 +425,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         if (tap) {
             nc_emit("NC Rthumb up -> solo tap");
             nc_tap(nc_rthumb, ts); /* 単独タップ = そのキー自身 (既定変換) */
-        } else if (nc_chrcount > 0) {
+        } else if (nc_chrcount > 0 && nc_judge == 0) {
             nc_type(ts);
         }
         nc_keycount = (nc_l_eff() ? 1 : 0) + nc_chrcount;
@@ -355,7 +433,9 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
     }
 
     if (nc_find(key) != NULL) {
-        if (nc_chrcount > 0) { /* 単独打鍵: releaseで確定 */
+        if (nc_judge != 0) { /* %方式: 文字キーrelease = インターバル終端で判定 */
+            nc_judge_resolve(ts);
+        } else if (nc_chrcount > 0) { /* 単独打鍵: releaseで確定 */
             nc_type(ts);
         }
         return ZMK_BEHAVIOR_OPAQUE;
@@ -367,6 +447,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
 static int behavior_nicola_init(const struct device *dev) {
     const struct behavior_nicola_config *cfg = dev->config;
     nc_timeout_ms = CLAMP(cfg->timeout_ms, 1, 1000);
+    nc_range_pct = CLAMP(cfg->range_pct, 1, 100);
     nc_cont = cfg->cont != 0;
     nc_lthumb = cfg->lthumb;
     nc_rthumb = cfg->rthumb;
@@ -438,7 +519,8 @@ static const struct behavior_parameter_metadata metadata = {
 
 void nc_cfg_get(struct nc_settings *out) {
     out->timeout_ms = nc_timeout_ms;
-    out->range_pct = -1; /* ms方式ブランチでは未使用 */
+    out->range_pct = nc_range_pct;
+    out->mode = nc_mode;
     out->cont = nc_cont;
     out->log = nc_log_on;
 }
@@ -450,6 +532,23 @@ int nc_cfg_set(const char *key, int32_t value) {
         settings_save_one("nicola/tmo", &nc_timeout_ms, sizeof(nc_timeout_ms));
 #endif
         nc_emit("NC cfg: timeout=%dms (saved)", nc_timeout_ms);
+        return 0;
+    }
+    if (strcmp(key, "range") == 0) {
+        nc_range_pct = CLAMP(value, 1, 100);
+#if IS_ENABLED(CONFIG_SETTINGS)
+        settings_save_one("nicola/rng", &nc_range_pct, sizeof(nc_range_pct));
+#endif
+        nc_emit("NC cfg: range=%d%% (saved)", nc_range_pct);
+        return 0;
+    }
+    if (strcmp(key, "mode") == 0) {
+        nc_mode = value != 0 ? 1 : 0;
+        nc_judge = 0; /* 方式切替時は判定待ちを破棄 */
+#if IS_ENABLED(CONFIG_SETTINGS)
+        settings_save_one("nicola/mod", &nc_mode, sizeof(nc_mode));
+#endif
+        nc_emit("NC cfg: mode=%s (saved)", nc_mode ? "pct(yamabuki)" : "ms");
         return 0;
     }
     if (strcmp(key, "cont") == 0) {
@@ -471,6 +570,8 @@ int nc_cfg_set(const char *key, int32_t value) {
 void nc_cfg_reset(void) {
 #if IS_ENABLED(CONFIG_SETTINGS)
     settings_delete("nicola/tmo");
+    settings_delete("nicola/rng");
+    settings_delete("nicola/mod");
     settings_delete("nicola/cnt");
 #endif
     nc_emit("NC cfg: saved settings cleared");
@@ -483,6 +584,18 @@ static int nicola_settings_set(const char *name, size_t len, settings_read_cb re
         read_cb(cb_arg, &nc_timeout_ms, len);
         nc_timeout_ms = CLAMP(nc_timeout_ms, 1, 1000);
         nc_emit("NC cfg loaded: timeout=%dms", nc_timeout_ms);
+        return 0;
+    }
+    if (settings_name_steq(name, "rng", NULL) && len == sizeof(nc_range_pct)) {
+        read_cb(cb_arg, &nc_range_pct, len);
+        nc_range_pct = CLAMP(nc_range_pct, 1, 100);
+        nc_emit("NC cfg loaded: range=%d%%", nc_range_pct);
+        return 0;
+    }
+    if (settings_name_steq(name, "mod", NULL) && len == sizeof(nc_mode)) {
+        read_cb(cb_arg, &nc_mode, len);
+        nc_mode = nc_mode != 0 ? 1 : 0;
+        nc_emit("NC cfg loaded: mode=%s", nc_mode ? "pct" : "ms");
         return 0;
     }
     if (settings_name_steq(name, "cnt", NULL) && len == 1) {
@@ -509,6 +622,7 @@ static const struct behavior_driver_api behavior_nicola_driver_api = {
 #define NC_INST(n)                                                                                 \
     static const struct behavior_nicola_config behavior_nicola_config_##n = {                      \
         .timeout_ms = DT_INST_PROP(n, timeout_ms),                                                 \
+        .range_pct = DT_INST_PROP(n, range_pct),                                                   \
         .cont = DT_INST_PROP(n, continuous_shift),                                                 \
         .lthumb = DT_INST_PROP_OR(n, left_thumb, SPACE),                                           \
         .rthumb = DT_INST_PROP_OR(n, right_thumb, INT4),                                           \

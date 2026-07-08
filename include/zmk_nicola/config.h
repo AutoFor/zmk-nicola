@@ -8,8 +8,9 @@
 #include <stdbool.h>
 
 struct nc_settings {
-    int32_t timeout_ms; /* ms方式の判定窓。%方式ブランチでは -1 */
-    int32_t range_pct;  /* %方式の判定範囲。ms方式ブランチでは -1 */
+    int32_t timeout_ms; /* ms方式の判定窓 */
+    int32_t range_pct;  /* %方式の判定範囲 */
+    int32_t mode;       /* 判定方式: 0=ms方式 1=%方式(やまぶきR) */
     bool cont;          /* 連続シフト */
     bool log;           /* 動作ログのストリーム出力 (非永続) */
 };

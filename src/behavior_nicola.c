@@ -27,6 +27,11 @@
 #include <dt-bindings/zmk/keys.h>
 #include <dt-bindings/zmk/hid_usage_pages.h>
 
+#if IS_ENABLED(CONFIG_SETTINGS)
+#include <zephyr/settings/settings.h>
+#endif
+#include <zmk_nicola/config.h>
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 /* 親指シフトキー (DTの left-thumb / right-thumb で変更可)。
@@ -452,6 +457,65 @@ static const struct behavior_parameter_metadata metadata = {
 };
 
 #endif /* IS_ENABLED(CONFIG_ZMK_BEHAVIOR_METADATA) */
+
+/* ---- 実行時設定 (USBシリアル設定コンソール / 永続化) ---- */
+
+void nc_cfg_get(struct nc_settings *out) {
+    out->timeout_ms = -1; /* %方式ブランチでは未使用 */
+    out->range_pct = nc_range_pct;
+    out->cont = nc_cont;
+}
+
+int nc_cfg_set(const char *key, int32_t value) {
+    if (strcmp(key, "range") == 0) {
+        nc_range_pct = CLAMP(value, 1, 100);
+#if IS_ENABLED(CONFIG_SETTINGS)
+        settings_save_one("nicola/rng", &nc_range_pct, sizeof(nc_range_pct));
+#endif
+        LOG_INF("NC cfg: range=%d%% (saved)", nc_range_pct);
+        return 0;
+    }
+    if (strcmp(key, "cont") == 0) {
+        nc_cont = value != 0;
+#if IS_ENABLED(CONFIG_SETTINGS)
+        uint8_t v = nc_cont ? 1 : 0;
+        settings_save_one("nicola/cnt", &v, sizeof(v));
+#endif
+        LOG_INF("NC cfg: cont=%d (saved)", (int)nc_cont);
+        return 0;
+    }
+    return -EINVAL;
+}
+
+void nc_cfg_reset(void) {
+#if IS_ENABLED(CONFIG_SETTINGS)
+    settings_delete("nicola/rng");
+    settings_delete("nicola/cnt");
+#endif
+    LOG_INF("NC cfg: saved settings cleared");
+}
+
+#if IS_ENABLED(CONFIG_SETTINGS)
+static int nicola_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+                               void *cb_arg) {
+    if (settings_name_steq(name, "rng", NULL) && len == sizeof(nc_range_pct)) {
+        read_cb(cb_arg, &nc_range_pct, len);
+        nc_range_pct = CLAMP(nc_range_pct, 1, 100);
+        LOG_INF("NC cfg loaded: range=%d%%", nc_range_pct);
+        return 0;
+    }
+    if (settings_name_steq(name, "cnt", NULL) && len == 1) {
+        uint8_t v;
+        read_cb(cb_arg, &v, 1);
+        nc_cont = v != 0;
+        LOG_INF("NC cfg loaded: cont=%d", (int)nc_cont);
+        return 0;
+    }
+    return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(nicola, "nicola", NULL, nicola_settings_set, NULL, NULL);
+#endif /* CONFIG_SETTINGS */
 
 static const struct behavior_driver_api behavior_nicola_driver_api = {
     .binding_pressed = on_nicola_pressed,

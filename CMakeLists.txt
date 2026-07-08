@@ -1,3 +1,5 @@
 if (CONFIG_NICOLA AND ((NOT CONFIG_ZMK_SPLIT) OR CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+  zephyr_include_directories(include)
   target_sources(app PRIVATE src/behavior_nicola.c)
+  target_sources(app PRIVATE src/config_console.c)
 endif()

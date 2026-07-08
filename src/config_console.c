@@ -55,21 +55,21 @@ static void handle_line(struct k_work *work) {
     if (strcmp(cmd, "get") == 0) {
         struct nc_settings s;
         nc_cfg_get(&s);
-        snprintf(buf, sizeof(buf), "ok timeout=%d range=%d cont=%d\n", s.timeout_ms, s.range_pct,
-                 (int)s.cont);
+        snprintf(buf, sizeof(buf), "ok timeout=%d range=%d cont=%d log=%d\n", s.timeout_ms,
+                 s.range_pct, (int)s.cont, (int)s.log);
         respond(buf);
     } else if (strcmp(cmd, "set") == 0) {
         char *key = strtok_r(NULL, " \t", &saveptr);
         char *val = strtok_r(NULL, " \t", &saveptr);
         if (key == NULL || val == NULL) {
-            respond("err usage: set <timeout|range|cont> <value>\n");
+            respond("err usage: set <timeout|range|cont|log> <value>\n");
             return;
         }
         if (nc_cfg_set(key, atoi(val)) == 0) {
             struct nc_settings s;
             nc_cfg_get(&s);
-            snprintf(buf, sizeof(buf), "ok timeout=%d range=%d cont=%d\n", s.timeout_ms,
-                     s.range_pct, (int)s.cont);
+            snprintf(buf, sizeof(buf), "ok timeout=%d range=%d cont=%d log=%d\n", s.timeout_ms,
+                     s.range_pct, (int)s.cont, (int)s.log);
             respond(buf);
         } else {
             respond("err unsupported key on this firmware\n");
@@ -103,6 +103,9 @@ static void uart_cb(const struct device *dev, void *user_data) {
     }
 }
 
+/* 動作ログ (set log 1) の出力先としてこのCDCを登録する */
+static void console_log_sink(const char *line) { respond(line); }
+
 static int nicola_console_init(void) {
 #if IS_ENABLED(CONFIG_SETTINGS)
     /* 保存済み設定を反映 (keymap既定値の後に上書き) */
@@ -114,6 +117,7 @@ static int nicola_console_init(void) {
     }
     uart_irq_callback_set(cfg_uart, uart_cb);
     uart_irq_rx_enable(cfg_uart);
+    nc_cfg_set_log_sink(console_log_sink);
     LOG_INF("NICOLA config console ready");
     return 0;
 }

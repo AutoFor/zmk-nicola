@@ -32,7 +32,30 @@
 #endif
 #include <zmk_nicola/config.h>
 
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+
+/* ---- 動作ログのストリーム出力 (Web設定ツールの表示用、set log 1 で有効) ---- */
+static bool nc_log_on = false;
+static nc_log_sink_t nc_log_sink = NULL;
+
+void nc_cfg_set_log_sink(nc_log_sink_t sink) { nc_log_sink = sink; }
+
+static void nc_emit(const char *fmt, ...) {
+    char buf[112];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf) - 2, fmt, ap);
+    va_end(ap);
+    LOG_INF("%s", buf);
+    if (nc_log_on && nc_log_sink != NULL) {
+        strcat(buf, "\n");
+        nc_log_sink(buf);
+    }
+}
 
 /* 親指シフトキー (DTの left-thumb / right-thumb で変更可)。
  * 単独タップ時はそのキー自身を送出する (既定: 左=Space, 右=INT4(変換)) */
@@ -177,7 +200,7 @@ static void nc_type_with(int64_t ts, bool lsh, bool rsh) {
             continue;
         }
         const char *out = lsh ? m->l : (rsh ? m->r : m->t);
-        LOG_INF("NC out '%s' plane=%c (key '%s')", out, lsh ? 'L' : (rsh ? 'R' : '-'), m->t);
+        nc_emit("NC out '%s' plane=%c (key '%s')", out, lsh ? 'L' : (rsh ? 'R' : '-'), m->t);
         nc_send_romaji(out, ts);
     }
     nc_chrcount = 0;
@@ -203,7 +226,7 @@ static void nc_judge_resolve(int64_t end_ts) {
     const int64_t total = end_ts - nc_last_chr_ts;
     const int64_t pos = nc_judge_ts - nc_last_chr_ts;
     const bool simul = (total <= 0) || (pos * 100 <= total * nc_range_pct);
-    LOG_INF("NC judge %cthumb: pos=%dms / total=%dms = %d%% (range=%d%%) -> %s",
+    nc_emit("NC judge %cthumb: pos=%dms / total=%dms = %d%% (range=%d%%) -> %s",
             judge == 1 ? 'L' : 'R', (int32_t)pos, (int32_t)total,
             total > 0 ? (int32_t)(pos * 100 / total) : 0, nc_range_pct,
             simul ? "SIMUL" : "LATE(single)");
@@ -266,9 +289,9 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
             /* 文字キー保留中: 同時打鍵かどうかの判定はインターバル終端まで保留 */
             nc_judge = 1;
             nc_judge_ts = ts;
-            LOG_INF("NC Lthumb dn: +%dms after char, judge pending", (int32_t)(ts - nc_last_chr_ts));
+            nc_emit("NC Lthumb dn: +%dms after char, judge pending", (int32_t)(ts - nc_last_chr_ts));
         } else {
-            LOG_INF("NC Lthumb dn (no pending char)");
+            nc_emit("NC Lthumb dn (no pending char)");
         }
         return ZMK_BEHAVIOR_OPAQUE;
     }
@@ -279,9 +302,9 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         if (nc_chrcount > 0 && nc_judge == 0) {
             nc_judge = 2;
             nc_judge_ts = ts;
-            LOG_INF("NC Rthumb dn: +%dms after char, judge pending", (int32_t)(ts - nc_last_chr_ts));
+            nc_emit("NC Rthumb dn: +%dms after char, judge pending", (int32_t)(ts - nc_last_chr_ts));
         } else {
-            LOG_INF("NC Rthumb dn (no pending char)");
+            nc_emit("NC Rthumb dn (no pending char)");
         }
         return ZMK_BEHAVIOR_OPAQUE;
     }
@@ -293,7 +316,7 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         if (nc_chrcount < NC_BUF_MAX) {
             nc_buf[nc_chrcount++] = key;
         }
-        LOG_INF("NC dn '%s' pend=%d L=%d R=%d", nc_name(key), nc_chrcount, (int)nc_l_held,
+        nc_emit("NC dn '%s' pend=%d L=%d R=%d", nc_name(key), nc_chrcount, (int)nc_l_held,
                 (int)nc_r_held);
         nc_last_chr_ts = ts;
         nc_keycount++;
@@ -339,7 +362,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
     if (key == nc_lthumb) {
         if (nc_judge == 1) {
             /* 文字キーより先に親指が離れた = 押下が完全に重なっている → 同時打鍵 */
-            LOG_INF("NC Lthumb up before char up -> full overlap, SIMUL");
+            nc_emit("NC Lthumb up before char up -> full overlap, SIMUL");
             nc_type_with(ts, true, false);
             nc_l_used = true;
             nc_judge = 0;
@@ -348,7 +371,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         nc_l_held = false;
         nc_l_used = false;
         if (tap) {
-            LOG_INF("NC Lthumb up -> solo tap");
+            nc_emit("NC Lthumb up -> solo tap");
             nc_tap(nc_lthumb, ts); /* 単独タップ = そのキー自身 (既定Space) */
         } else if (nc_chrcount > 0) {
             nc_type(ts);
@@ -358,7 +381,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
     }
     if (key == nc_rthumb) {
         if (nc_judge == 2) {
-            LOG_INF("NC Rthumb up before char up -> full overlap, SIMUL");
+            nc_emit("NC Rthumb up before char up -> full overlap, SIMUL");
             nc_type_with(ts, false, true);
             nc_r_used = true;
             nc_judge = 0;
@@ -367,7 +390,7 @@ static int on_nicola_released(struct zmk_behavior_binding *binding,
         nc_r_held = false;
         nc_r_used = false;
         if (tap) {
-            LOG_INF("NC Rthumb up -> solo tap");
+            nc_emit("NC Rthumb up -> solo tap");
             nc_tap(nc_rthumb, ts); /* 単独タップ = そのキー自身 (既定変換) */
         } else if (nc_chrcount > 0) {
             nc_type(ts);
@@ -464,6 +487,7 @@ void nc_cfg_get(struct nc_settings *out) {
     out->timeout_ms = -1; /* %方式ブランチでは未使用 */
     out->range_pct = nc_range_pct;
     out->cont = nc_cont;
+    out->log = nc_log_on;
 }
 
 int nc_cfg_set(const char *key, int32_t value) {
@@ -472,7 +496,7 @@ int nc_cfg_set(const char *key, int32_t value) {
 #if IS_ENABLED(CONFIG_SETTINGS)
         settings_save_one("nicola/rng", &nc_range_pct, sizeof(nc_range_pct));
 #endif
-        LOG_INF("NC cfg: range=%d%% (saved)", nc_range_pct);
+        nc_emit("NC cfg: range=%d%% (saved)", nc_range_pct);
         return 0;
     }
     if (strcmp(key, "cont") == 0) {
@@ -481,7 +505,11 @@ int nc_cfg_set(const char *key, int32_t value) {
         uint8_t v = nc_cont ? 1 : 0;
         settings_save_one("nicola/cnt", &v, sizeof(v));
 #endif
-        LOG_INF("NC cfg: cont=%d (saved)", (int)nc_cont);
+        nc_emit("NC cfg: cont=%d (saved)", (int)nc_cont);
+        return 0;
+    }
+    if (strcmp(key, "log") == 0) { /* 動作ログのストリーム (非永続) */
+        nc_log_on = value != 0;
         return 0;
     }
     return -EINVAL;
@@ -492,7 +520,7 @@ void nc_cfg_reset(void) {
     settings_delete("nicola/rng");
     settings_delete("nicola/cnt");
 #endif
-    LOG_INF("NC cfg: saved settings cleared");
+    nc_emit("NC cfg: saved settings cleared");
 }
 
 #if IS_ENABLED(CONFIG_SETTINGS)
@@ -501,14 +529,14 @@ static int nicola_settings_set(const char *name, size_t len, settings_read_cb re
     if (settings_name_steq(name, "rng", NULL) && len == sizeof(nc_range_pct)) {
         read_cb(cb_arg, &nc_range_pct, len);
         nc_range_pct = CLAMP(nc_range_pct, 1, 100);
-        LOG_INF("NC cfg loaded: range=%d%%", nc_range_pct);
+        nc_emit("NC cfg loaded: range=%d%%", nc_range_pct);
         return 0;
     }
     if (settings_name_steq(name, "cnt", NULL) && len == 1) {
         uint8_t v;
         read_cb(cb_arg, &v, 1);
         nc_cont = v != 0;
-        LOG_INF("NC cfg loaded: cont=%d", (int)nc_cont);
+        nc_emit("NC cfg loaded: cont=%d", (int)nc_cont);
         return 0;
     }
     return -ENOENT;

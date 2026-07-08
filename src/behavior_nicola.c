@@ -378,8 +378,9 @@ static int on_nicola_pressed(struct zmk_behavior_binding *binding,
         return ZMK_BEHAVIOR_OPAQUE;
     }
 
-    /* テーブル外のキーは素通し */
-    nc_type(ts);
+    /* テーブル外のキーは素通し。%方式の判定保留中(nc_judge!=0)なら、この打鍵が
+     * インターバル終端(=別キー押下)に当たるので nc_flush で確定させてから吐く */
+    nc_flush(ts);
     if (nc_raw_n < NC_BUF_MAX) {
         nc_raw[nc_raw_n++] = key;
     }

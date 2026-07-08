@@ -11,6 +11,7 @@ struct nc_settings {
     int32_t timeout_ms; /* ms方式の判定窓。%方式ブランチでは -1 */
     int32_t range_pct;  /* %方式の判定範囲。ms方式ブランチでは -1 */
     bool cont;          /* 連続シフト */
+    bool log;           /* 動作ログのストリーム出力 (非永続) */
 };
 
 void nc_cfg_get(struct nc_settings *out);
@@ -21,3 +22,7 @@ int nc_cfg_set(const char *key, int32_t value);
 
 /* 保存済み設定を削除し、次回起動時にkeymapの既定値へ戻す */
 void nc_cfg_reset(void);
+
+/* 動作ログの出力先 (設定コンソールが登録する)。lineは改行込み */
+typedef void (*nc_log_sink_t)(const char *line);
+void nc_cfg_set_log_sink(nc_log_sink_t sink);
